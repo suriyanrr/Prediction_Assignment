@@ -1,0 +1,269 @@
+---
+output: html_document
+---
+#Practical Machine Learning/ Prediction Assignment
+
+##1. Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement Â– a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this data set, the participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants toto predict the manner in which praticipants did the exercise.
+
+The dependent variable or response is the “classe” variable in the training set.
+
+##2. Obtaining the data
+
+Download the file and loaded the data into R
+
+```{r obtainingData}
+
+# Setting the present working directory
+
+setwd("C:\\Users\\NIRANJAN\\Documents\\R")
+
+# Downloading the file
+
+if (! file.exists("pml-training.csv")){
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+              destfile = "./pml-training.csv")
+  }
+
+if (! file.exists("pml-testing.csv")){
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+              destfile = "./pml-testing.csv")
+  }
+  
+# Loading the file into R
+
+trainingOrg <- read.csv("pml-training.csv", na.strings=c("", "NA", "NULL"))
+testingOrg <- read.csv("pml-testing.csv", na.strings=c("", "NA", "NULL"))
+dim(trainingOrg)
+dim(testingOrg)
+
+```
+
+##3. Pre-screening the data
+
+There are several approaches for reducing the number of predictors. The following lists the methods followed in this assignment.
+
+1. Removed variables that have too many NA values.
+
+```{r removeNAVariables}
+
+training.dena <- trainingOrg[ , colSums(is.na(trainingOrg)) == 0]
+dim(training.dena)
+
+```
+
+2. Removed unrelevant variables. There are some unrelevant variables that can be removed as they are unlikely to be related to dependent variable.
+
+```{r removeUnrelevantVariables}
+
+remove <- c('X', 'user_name', 'raw_timestamp_part_1', 'raw_timestamp_part_2',
+           'cvtd_timestamp', 'new_window', 'num_window')
+training.dere <- training.dena[, -which(names(training.dena) %in% remove)]
+dim(training.dere)
+
+```
+
+3. Checked the variables that have extremely low variance.
+
+```{r removeLowVarianceVariables}
+
+library(caret)
+
+# Only numeric variabls can be evaluated in this way.
+
+zeroVar <- nearZeroVar(training.dere[sapply(training.dere, is.numeric)], 
+                     saveMetrics = TRUE)
+training.nonzerovar <- training.dere[,zeroVar[, 'nzv']==0]
+dim(training.nonzerovar)
+
+```
+
+4. Remove highly correlated variables above 90%
+
+```{r removeHighlyCorrelatedVariables}
+
+# Only numeric variabls can be evaluated in this way.
+corrMatrix <- cor(na.omit(training.nonzerovar[sapply(training.nonzerovar, 
+                                                     is.numeric)]))
+dim(corrMatrix)
+
+corrDF <- expand.grid(row = 1:52, col = 1:52)
+corrDF$correlation <- as.vector(corrMatrix)
+levelplot(correlation ~ row+ col, corrDF)
+
+# Removing those variable which have high correlation.
+
+removecor <- findCorrelation(corrMatrix, cutoff = .90, verbose = FALSE)
+
+training.decor <- training.nonzerovar[,-removecor]
+dim(training.decor)
+
+```
+
+Finally after applying all the pre-screening methods, we get `r nrow(training.decor)` samples and `r ncol(training.decor)` variables.
+
+###3.1. Split data into training and testing for cross validation
+
+```{r splitDataForCrossValidation}
+
+inTrain <- createDataPartition(y=training.decor$classe, p=0.7, list=FALSE)
+training <- training.decor[inTrain,]; testing <- training.decor[-inTrain,]
+dim(training)
+dim(testing)
+
+```
+
+We got `r nrow(training)` samples and `r ncol(training)` variables for training, `r nrow(testing)` samples and `r ncol(testing)` variables for testing.
+
+##4. Analysis
+### Regression Tree
+
+Now we fit a tree to these data, and summarize and plot it. First, we use the 'tree' package. It is much faster than 'caret' package.
+
+```{r regressionTree}
+
+library(tree)
+set.seed(12345)
+tree.training <- tree(classe~.,data=training)
+summary(tree.training)
+
+plot(tree.training)
+text(tree.training,pretty=0, cex =.8)
+
+```
+
+This is a bushy tree, and we are going to prune it.
+
+### Rpart form Caret, very slow
+
+```{r UsingRpart}
+
+library(caret)
+modFit <- train(classe ~ .,method="rpart",data=training)
+print(modFit$finalModel)
+
+```
+
+### Prettier plots
+
+```{r PrettierPlots}
+
+library(rattle)
+
+fancyRpartPlot(modFit$finalModel)
+
+```
+
+The result from 'caret' 'rpart' package is close to 'tree' package
+
+### Cross Validation
+
+We are going to check the performance of the tree on the testing data by cross validation.
+
+```{r crossValidation}
+
+# Cross Vaildating the Tree package
+
+tree.pred <- predict(tree.training,testing,type="class")
+predMatrix <- with(testing,table(tree.pred,classe))
+sum(diag(predMatrix))/sum(as.vector(predMatrix)) # error rate
+
+# Cross Validating the Caret package
+
+tree.pred <- predict(modFit,testing)
+predMatrix <- with(testing,table(tree.pred,classe))
+sum(diag(predMatrix))/sum(as.vector(predMatrix)) # error rate
+
+```
+
+The 0.70 from 'tree' package is not very accurate. Meanwhile, the 0.50 from 'caret' package is much lower than the result from 'tree' package.
+
+### Pruning tree
+
+This tree was grown to full depth, and might be too variable. We now use Cross Validation to prune it.
+
+```{r pruningTree1}
+
+cv.training <- cv.tree(tree.training,FUN=prune.misclass)
+cv.training
+plot(cv.training)
+
+```
+
+It shows that when the size of the tree goes down, the deviance goes up. It means the 21 is a good size (i.e. number of terminal nodes) for this tree. We do not need to prune it.
+
+Suppose we prune it at size of nodes at 18.
+
+```{r pruningTree2}
+
+prune.training <- prune.misclass(tree.training,best=18)
+
+```
+
+Now lets evaluate this pruned tree on the test data.
+
+```{r pruningTree3}
+
+tree.pred <- predict(prune.training,testing,type="class")
+predMatrix <- with(testing,table(tree.pred,classe))
+sum(diag(predMatrix))/sum(as.vector(predMatrix)) # error rate
+
+```
+
+0.66 is a little less than 0.70, so pruning did not hurt us with repect to misclassification errors, and gave us a simpler tree. We use less predictors to get almost the same result. By pruning, we got a shallower tree, which is easier to interpret.
+
+The single tree is not good enough, so we are going to use bootstrap to improve the accuracy. We are going to try random forests.
+
+### Random Forests
+
+This method uses trees as building block to build a more complex model. Random forests build lots of bushy trees, and then average them to reduce the variance. Lets fit a random forest and see how well it performs.
+
+```{r randomForests}
+
+require(randomForest)
+set.seed(12345)
+
+rf.training <- randomForest(classe~.,data=training,ntree=100, importance=TRUE)
+rf.training
+
+varImpPlot(rf.training,)
+
+```
+
+we can see which variables have higher impact on the prediction.
+
+### Out-of Sample Accuracy
+
+Our Random Forest model shows OOB estimate of error rate: 0.72% for the training data. Now we will predict it for out-of sample accuracy.
+
+Now lets evaluate this tree on the test data.
+
+```{r outOfSampleAccuracy}
+
+tree.pred <- predict(rf.training,testing,type="class")
+predMatrix <- with(testing,table(tree.pred,classe))
+sum(diag(predMatrix))/sum(as.vector(predMatrix)) # error rate
+
+```
+
+0.99 means we got a very accurate estimate.
+
+No. of variables tried at each split: 6. It means every time we only randomly use 6 predictors to grow the tree. Since p = 43, we can have it from 1 to 43, but it seems 6 is enough to get the good result.
+
+##5. Conclusion
+
+Now we can predict the testing data from the website.
+
+```{r conclusion}
+
+answers <- predict(rf.training, testingOrg)
+answers
+
+```
+
+This shows that this random forest model did a good job for this dataset.
